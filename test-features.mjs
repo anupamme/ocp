@@ -6081,6 +6081,12 @@ test("upstream rate limit: quota/rate NOUNS match, transient advice alone does N
   for (const m of [
     "Claude usage limit reached — resets at 7:00",
     "usage_limit_reached",
+    // OBSERVED FROM A LIVE 500, not invented: on 2026-09-15 a v3.36.0 instance hit the 5-hour
+    // subscription wall and returned exactly this string in a `500 proxy_error` body, while OCP's
+    // own log carried the originating `rate_limit_event` frame (`rateLimitType: "five_hour"`, with
+    // a `resetsAt` epoch). The frame is not what this classifier receives -- the caller-visible
+    // message is -- which is why the phrase has to match on its own.
+    "You've hit your session limit · resets 5am (UTC)",
     "API error: rate limit exceeded",
     "429 Too Many Requests",
     "quota exceeded for this organization",
@@ -6101,6 +6107,37 @@ test("upstream rate limit: quota/rate NOUNS match, transient advice alone does N
     // the phrase list and the regex cannot silently invert.
     "429 Too Many Requests",
   ]) assert.equal(isUpstreamRateLimit(m), true, `should be a rate limit: ${m}`);
+
+  // THE NEAR-MISSES FOR THE SESSION-LIMIT PATTERN, all four taken VERBATIM out of the `claude`
+  // 2.1.270 binary this proxy spawns. The original version of that pattern was the bare noun
+  // "session limit", and every one of these classified as a rate limit under it -- measured, not
+  // reasoned. The first is the one that matters: a failed RESET is an operation failure, and
+  // answering it 429 tells a fallback-capable client to leave the vendor over something that never
+  // concerned quota. Same shape as the "heap limit exceeded" row below, one phrase later.
+  //
+  // They were FOUND, not invented: the negative corpus for a phrase matched against an upstream's
+  // output is that upstream's own strings. The PR that added the pattern looked for plausible
+  // neighbours instead ("session not found", "session expired") and neither of those is what bites.
+  // Byte-faithful, including the U+00B7 separator the CLI uses. The first transcription of these
+  // rows carried an ASCII hyphen and, worse, PARAPHRASED two of them ("one is already in progress"
+  // for "one moment"; "You will get priority" for "Continue now at lower priority") -- while the
+  // comment above called them VERBATIM. Caught in review. A corpus labelled verbatim is only worth
+  // anything if it is a transcript: the moment the pattern is extended past the noun, a paraphrase
+  // validates it against text the upstream never emits.
+  for (const m of [
+    "Couldn't reset your session limit right now \u00b7 try again in a moment",
+    "Your session limit is already being reset \u00b7 one moment",
+    "Upgrade to Max 20x for higher session limits every month",
+    "Continue now at lower priority after reaching your session limit; run again to stop",
+  ]) assert.equal(isUpstreamRateLimit(m), false, `a non-wall mention of the noun must NOT be a rate limit: ${m}`);
+
+  // ...and the wall itself still is, in both phrasings. These two are the control for the four
+  // above: a narrowing that killed the false positives by also killing the wall would pass the rows
+  // above and fail here.
+  for (const m of [
+    "You've hit your session limit \u00b7 resets 5am (UTC)",
+    "you have hit your session limit",
+  ]) assert.equal(isUpstreamRateLimit(m), true, `the wall must still classify: ${m}`);
 
   // Negative: ordinary failures, INCLUDING ones carrying retry advice. This is the row that keeps
   // the guard from firing on everything — transient phrases alone must not promote a 500 to a 429,
