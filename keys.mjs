@@ -480,16 +480,17 @@ export function checkQuota(keyId, _keyName) {
 // Pass null to clear a specific limit. Omit a field to leave it unchanged.
 export function updateKeyQuota(idOrName, updates = {}) {
   const d = getDb();
-  const setClauses = [];
-  const params = [];
-  if ("daily" in updates)  { setClauses.push("quota_daily = ?");  params.push(updates.daily ?? null); }
-  if ("weekly" in updates) { setClauses.push("quota_weekly = ?"); params.push(updates.weekly ?? null); }
-  if ("monthly" in updates){ setClauses.push("quota_monthly = ?");params.push(updates.monthly ?? null); }
-  if (setClauses.length === 0) return false;
-  params.push(idOrName, idOrName);
+  if (!("daily" in updates) && !("weekly" in updates) && !("monthly" in updates)) return false;
+  const current = d.prepare(
+    "SELECT quota_daily, quota_weekly, quota_monthly FROM api_keys WHERE id = ? OR name = ?"
+  ).get(idOrName, idOrName);
+  if (!current) return false;
+  const daily   = "daily"   in updates ? (updates.daily   ?? null) : current.quota_daily;
+  const weekly  = "weekly"  in updates ? (updates.weekly  ?? null) : current.quota_weekly;
+  const monthly = "monthly" in updates ? (updates.monthly ?? null) : current.quota_monthly;
   const result = d.prepare(
-    `UPDATE api_keys SET ${setClauses.join(", ")} WHERE id = ? OR name = ?`
-  ).run(...params);
+    "UPDATE api_keys SET quota_daily = ?, quota_weekly = ?, quota_monthly = ? WHERE id = ? OR name = ?"
+  ).run(daily, weekly, monthly, idOrName, idOrName);
   return result.changes > 0;
 }
 
